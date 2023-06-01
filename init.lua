@@ -1,13 +1,25 @@
+-- Scripted by JCL
+--!strict
 local DataStoreRequest = {}
 
 export type RequestType = "GetAsync" | "SetAsync" | "IncrementAsync" | "UpdateAsync" | "RemoveAsync" | "GetSortedAsync" | "GetVersionAsync" | "ListKeysAsync" | "RemoveVersionAsync"
 
+type Request = {
+	maxRetries: number,
+	try: number,
+	store: GlobalDataStore,
+	type: RequestType,
+	args: {any},
+	callback: ((...any) -> ())?,
+	errorHandler: ((...any) -> ())?,
+	result: {any}?,
+}
+
 -- RBX SERVICES
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local DataStoreService = game:GetService("DataStoreService")
 local Players = game:GetService("Players")
 -- PACKAGES
-local Signal = require(script.Parent.Parent.Signal)
+local Signal = require(script.Parent.Signal)
 --
 local REQUEST_TYPE_ENUM = {
 	["GetAsync"] = Enum.DataStoreRequestType.GetAsync,
@@ -52,18 +64,36 @@ local function getRequestQueue(request)
 	return requestQueues[reqType] or requestQueues["Default"]
 end
 
-local function startRequestQueueLoop(queue)
-	repeat
-		local request = table.remove(queue, 1)
+local function startRequestQueueLoop(queue: {Request}): ()
+	local request = table.remove(queue, 1)
+	while request do
+		-- Wait for requests to be available
 		while getRequestBudget(request) <= 0 do
 			task.wait(3)
 		end
-		local func = request.datastore[request.type]
-		local vals = table.pack(pcall(func, request.datastore, table.unpack(request.args)))
-		request.finished = true
-		task.defer(onRequestFinished.FireDeferred, onRequestFinished, request, vals)
+		--
+		request.try += 1
+		local func = request.store[request.type]
+		local vals = table.pack(pcall(func, request.store, table.unpack(request.args)))
+
+		local success = vals[1]
+		if success and request.callback ~= nil then
+			task.spawn(request.callback, table.unpack(vals, 2))
+		elseif not success and request.try <= request.maxRetries then
+				task.spawn(function()
+					task.wait(REQUEST_FAIL_WAIT)
+					onRequestAdded:Fire(request)
+				end)
+		elseif request.errorHandler ~= nil then
+			task.spawn(request.errorHandler, table.unpack(vals, 2))
+		else
+			request.result = vals
+			task.defer(onRequestFinished.FireDeferred, onRequestFinished, request, vals)
+		end
+
 		task.wait(getRequestWait(request))
-	until #queue == 0
+		request = table.remove(queue, 1)
+	end
 end
 
 local function listenForQueueRequests(queue)
@@ -84,71 +114,43 @@ local function init()
 	listenForQueueRequests(requestQueues[Enum.DataStoreRequestType.GetSortedAsync])
 end
 
-function DataStoreRequest.queueAsync(datastore: GlobalDataStore, requestType: RequestType, maxRetries: number, ...: any): (boolean, ...any)
+function DataStoreRequest.queueAsync(store: GlobalDataStore, requestType: RequestType, maxRetries: number, ...: any): (boolean, ...any)
 	assert(REQUEST_TYPE_ENUM[requestType], "Invalid request type")
 	assert(type(maxRetries) == "number", "Invalid retry amount")
-	assert(typeof(datastore) == "Instance" and datastore:IsA("GlobalDataStore"), "Invalid datastore")
+	assert(typeof(store) == "Instance" and store:IsA("GlobalDataStore"), "Invalid datastore")
 
-	local thisRequest = {
-		datastore = datastore,
+	local request: Request = {
+		maxRetries = maxRetries,
+		try = 0,
+		store = store,
 		type = requestType,
 		args = table.pack(...),
-		finished = false,
-		result = nil,
 	}
-	local retry = 0
-	local success, vals
-	repeat
-		if success == false then
-			thisRequest.finished = false
-			task.wait(REQUEST_FAIL_WAIT)
-		end
-		onRequestAdded:Fire(thisRequest)
-		if not thisRequest.result then
-			repeat
-				_, vals = onRequestFinished:Wait()
-				success = vals[1]
-			until thisRequest.finished
-		end
-		retry += 1
-	until success or retry > maxRetries
-	return success, table.unpack(vals, 2)
+
+	while not request.result do
+		onRequestFinished:Wait()
+	end
+
+	if not request.result then return false end
+	return table.unpack(request.result)
 end
 
-function DataStoreRequest.queue(datastore: GlobalDataStore, requestType: RequestType, maxRetries: number, callback: (...any) -> (), errorHandler: (err: string) -> (), ...: any): ()
-	assert(typeof(datastore) == "Instance" and datastore:IsA("GlobalDataStore"), "Invalid datastore")
+function DataStoreRequest.queue(store: GlobalDataStore, requestType: RequestType, maxRetries: number, callback: (...any) -> (), errorHandler: (err: string) -> (), ...: any): ()
+	assert(typeof(store) == "Instance" and store:IsA("GlobalDataStore"), "Invalid datastore")
 	assert(REQUEST_TYPE_ENUM[requestType], "Invalid request type")
 	assert(type(maxRetries) == "number", "Invalid retry amount")
 	assert(type(callback) == "function", "Invalid callback function")
 	assert(type(errorHandler) == "function", "Invalid errorHandler function")
 
-	local thisRequest = {
-		datastore = datastore,
+	onRequestAdded:Fire({
+		maxRetries = maxRetries,
+		try = 0,
+		store = store,
 		type = requestType,
 		args = table.pack(...),
-		finished = false,
-		result = nil,
-	}
-	local retry = 0
-	local conn
-	conn = onRequestFinished:Connect(function(_, vals)
-		if not thisRequest.finished then return end
-		retry += 1
-		local success = vals[1]
-		if success then
-			task.spawn(callback, table.unpack(vals, 2))
-		else
-			if retry <= maxRetries then
-				thisRequest.finished = false
-				task.wait(REQUEST_FAIL_WAIT)
-				onRequestAdded:Fire(thisRequest)
-				return
-			end
-			task.spawn(errorHandler, table.unpack(vals, 2))
-		end
-		conn:Disconnect()
-	end)
-	onRequestAdded:Fire(thisRequest)
+		callback = callback,
+		errorHandler = errorHandler,
+	})
 end
 
 

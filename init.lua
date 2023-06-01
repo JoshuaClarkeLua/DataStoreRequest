@@ -135,7 +135,7 @@ function DataStoreRequest.queueAsync(store: GlobalDataStore, requestType: Reques
 	return table.unpack(request.result)
 end
 
-function DataStoreRequest.queue(store: GlobalDataStore, requestType: RequestType, maxRetries: number, callback: (...any) -> (), errorHandler: (err: string) -> (), ...: any): ()
+function DataStoreRequest.queue(store: GlobalDataStore, requestType: RequestType, maxRetries: number, callback: (...any) -> ()?, errorHandler: (err: string) -> ()?, ...: any): ()
 	assert(typeof(store) == "Instance" and store:IsA("GlobalDataStore"), "Invalid datastore")
 	assert(REQUEST_TYPE_ENUM[requestType], "Invalid request type")
 	assert(type(maxRetries) == "number", "Invalid retry amount")

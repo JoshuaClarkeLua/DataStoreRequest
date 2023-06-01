@@ -80,10 +80,10 @@ local function startRequestQueueLoop(queue: {Request}): ()
 		if success and request.callback ~= nil then
 			task.spawn(request.callback, table.unpack(vals, 2))
 		elseif not success and request.try <= request.maxRetries then
-				task.spawn(function()
-					task.wait(REQUEST_FAIL_WAIT)
-					onRequestAdded:Fire(request)
-				end)
+			task.spawn(function()
+				task.wait(REQUEST_FAIL_WAIT)
+				onRequestAdded:Fire(request)
+			end)
 		elseif request.errorHandler ~= nil then
 			task.spawn(request.errorHandler, table.unpack(vals, 2))
 		else
@@ -126,6 +126,8 @@ function DataStoreRequest.queueAsync(store: GlobalDataStore, requestType: Reques
 		type = requestType,
 		args = table.pack(...),
 	}
+
+	onRequestAdded:Fire(request)
 
 	while not request.result do
 		onRequestFinished:Wait()
